@@ -6,7 +6,9 @@
 <style>
   html,body{margin:0;height:100%;background:#1a1423;overflow:hidden;
     font-family:ui-monospace,Menlo,Consolas,monospace}
-  #wrap{display:flex;flex-direction:column;height:100%}
+  #wrap{display:flex;flex-direction:column;height:100%;position:relative}
+  body.fs #hdr{position:absolute;top:0;left:0;right:0;z-index:2;opacity:0;background:#1a1423;transition:opacity .2s}
+  body.fs #hdr:hover{opacity:1}
   #hdr{color:#e8c170;padding:7px 14px;font-size:13px;letter-spacing:1px;
     border-bottom:2px solid #3a2f4b;display:flex;justify-content:space-between;
     align-items:center;gap:8px;flex-wrap:wrap}
@@ -38,6 +40,7 @@
     <span class="btn" id="zout" title="zoom out (Ctrl + wheel)">&minus;</span>
     <span class="btn" id="zin" title="zoom in (Ctrl + wheel)">+</span>
     <span class="btn" id="fit" title="fit the whole office">fit</span>
+    <span class="btn" id="full" title="fullscreen: office fills the whole screen (Esc to exit, move the mouse to the top for buttons)">full</span>
     <span class="btn" id="edit" title="move desks, TV set, plants; add or remove furniture">&#9998; layout</span>
     <span class="btn" id="sound" title="chime when an agent needs approval or a subagent finishes">&#9834; sound off</span>
     <span class="btn" id="spawn" style="display:none" title="open a terminal running hermes">+ agent</span>
@@ -70,16 +73,19 @@ function px(x,y,w,h,col){
 function fs(base){return Math.max(6,Math.min(base*1.2,Math.round(S*base/4)))}
 
 // ── layout model ────────────────────────────────────────────────────────
-// layout = {desks:{agentId:{x,y}}, items:[{id,type,x,y}]}; saved on the office server (/layout).
-let layout={desks:{},items:null};       // saved
-let edit=null;                          // working copy while editing
+// layout = {desks:{agentId:{x,y}}, items:[{id,type,x,y}], rooms:{meet|pantry|rest:{x,y}}}; saved on the office server (/layout).
+let layout={desks:{},items:null,rooms:null};   // saved
+let edit=null;                                  // working copy while editing
 let sel=null, drag=null, pan=null;
 const ITEM_SIZE={tvset:{w:26,h:23},plant:{w:7,h:9},shelf:{w:12,h:14}};
+const ROOM_SIZE={meet:{w:96,h:52},pantry:{w:48,h:26},rest:{w:48,h:26}};
+const ROOM_LABEL={meet:"MEETING",pantry:"PANTRY",rest:"REST ROOM"};
+const DESK_W=16, DESK_H=26;                     // desk + label area, used for overlap checks
 function worldInfo(){
   const n=Math.max(1,agents.length);
   const cols=Math.max(4,Math.ceil(Math.sqrt(n*1.6))), rows=Math.ceil(n/cols);
   const workW=10+cols*34, workH=14+rows*32+34, wx=workW+6;
-  return {n,cols,rows,workW,workH,wx,W:wx+52,H:Math.max(workH,96)};
+  return {n,cols,rows,workW,workH,wx,W:wx+104,H:100};
 }
 function curL(){return edit||layout}
 function deskPos(i,a,wi){
@@ -91,16 +97,31 @@ function defaultItems(wi){
   return [{id:"tv1",type:"tvset",x:cx-13,y},{id:"pl1",type:"plant",x:10,y:y+8},{id:"pl2",type:"plant",x:wi.workW-14,y:y+8}];
 }
 function itemsOf(wi){return curL().items||defaultItems(wi)}
+function defaultRooms(wi){const x=wi.wx;return {meet:{x,y:8},pantry:{x,y:62},rest:{x,y:90}}}
+function roomPos(k,wi){const o=curL().rooms&&curL().rooms[k];return o?{x:o.x,y:o.y}:defaultRooms(wi)[k]}
 function rooms(wi){
-  const x=wi.wx, R={};
-  R.meet={x,y:8,w:48,h:26,label:"MEETING"}; R.pantry={x,y:36,w:48,h:26,label:"PANTRY"}; R.rest={x,y:64,w:48,h:26,label:"REST ROOM"};
-  const mc={x:x+24,y:8+14};
-  R.meet.c=mc; R.meet.seats=[{x:mc.x-16,y:mc.y-6},{x:mc.x+8,y:mc.y-6},{x:mc.x-4,y:mc.y-20},{x:mc.x-4,y:mc.y+3}];
-  const ptc={x:x+32,y:36+16};
-  R.pantry.tc=ptc; R.pantry.coffee={x:x+3,y:36+8};
-  R.pantry.seats=[{x:ptc.x-13,y:ptc.y-6},{x:ptc.x+5,y:ptc.y-6}];
-  R.rest.beds=[{x:x+3,y:64+6},{x:x+27,y:64+6},{x:x+3,y:64+17},{x:x+27,y:64+17}].map(b=>({x:b.x,y:b.y,sx:b.x+5,sy:b.y-4}));
+  const R={};
+  for(const k of Object.keys(ROOM_SIZE)){const p=roomPos(k,wi),s=ROOM_SIZE[k];R[k]={x:p.x,y:p.y,w:s.w,h:s.h,label:ROOM_LABEL[k]}}
+  const m=R.meet; m.table={x:m.x+16,y:m.y+21,w:64,h:10}; m.seats=[];
+  for(let i=0;i<4;i++)m.seats.push({x:m.x+20+i*16,y:m.y+8});          // top row
+  for(let i=0;i<4;i++)m.seats.push({x:m.x+20+i*16,y:m.y+34});         // bottom row
+  const p=R.pantry; p.tc={x:p.x+32,y:p.y+16}; p.coffee={x:p.x+3,y:p.y+8};
+  p.seats=[{x:p.tc.x-13,y:p.tc.y-6},{x:p.tc.x+5,y:p.tc.y-6}];
+  const r=R.rest;
+  r.beds=[{x:r.x+3,y:r.y+6},{x:r.x+27,y:r.y+6},{x:r.x+3,y:r.y+17},{x:r.x+27,y:r.y+17}].map(b=>({x:b.x,y:b.y,sx:b.x+5,sy:b.y-4}));
   return R;
+}
+// every movable thing as a rectangle (used for overlap checks and world size)
+function allRects(wi,except){
+  const out=[];
+  agents.forEach((a,i)=>{const d=deskPos(i,a,wi);out.push({key:"desk:"+a.id,x:d.x,y:d.y,w:DESK_W,h:DESK_H})});
+  for(const it of itemsOf(wi)){const s=ITEM_SIZE[it.type]||{w:8,h:8};out.push({key:"item:"+it.id,x:it.x,y:it.y,w:s.w,h:s.h})}
+  for(const k of Object.keys(ROOM_SIZE)){const p=roomPos(k,wi),s=ROOM_SIZE[k];out.push({key:"room:"+k,x:p.x,y:p.y,w:s.w,h:s.h})}
+  return except?out.filter(r=>r.key!==except):out;
+}
+function collides(rects,x,y,w,h){
+  for(const r of rects)if(x<r.x+r.w&&x+w>r.x&&y<r.y+r.h&&y+h>r.y)return true;
+  return false;
 }
 let ANCH=null;
 function computeAnchors(){
@@ -108,6 +129,9 @@ function computeAnchors(){
   for(const it of items)if(it.type==="tvset"){
     sofas.push({x:it.x+3,y:it.y+10,item:it.id,side:0},{x:it.x+15,y:it.y+10,item:it.id,side:1});
   }
+  let W=60,H=60;
+  for(const r of allRects(wi)){W=Math.max(W,r.x+r.w);H=Math.max(H,r.y+r.h)}
+  wi.W=W+6; wi.H=H+6;
   ANCH={wi,R,items,sofas};
 }
 
@@ -128,11 +152,12 @@ function roomBox(r,tint){
     ctx.fillText(r.label,X(r.x+2),Y(r.y+r.h-2))}
 }
 function drawRooms(R){
-  // meeting room: round table
+  // meeting room: whiteboard + long table
   roomBox(R.meet,"#2c2540");
-  const c=R.meet.c;
-  px(c.x-4,c.y-7,8,14,"#6b4a2f");px(c.x-6,c.y-6,12,12,"#6b4a2f");px(c.x-7,c.y-4,14,8,"#6b4a2f");
-  px(c.x-3,c.y-5,6,10,"#7d5a3a");
+  const m=R.meet, t=m.table;
+  px(m.x+28,m.y+2,40,5,"#c8c8d8"); px(m.x+29,m.y+3,38,3,"#e8e8f0");
+  px(t.x,t.y,t.w,t.h,"#6b4a2f"); px(t.x,t.y,t.w,1,"#7d5a3a"); px(t.x+1,t.y+t.h,t.w-2,1,"#54381f");
+  px(t.x+6,t.y+3,6,3,"#4a4a5a"); px(t.x+28,t.y+3,6,3,"#4a4a5a"); px(t.x+50,t.y+3,6,3,"#4a4a5a");   // laptops
   // pantry: counter, coffee machine, microwave, sink, fridge, round table
   roomBox(R.pantry,"#2e2a3a");
   const p=R.pantry;
@@ -141,8 +166,8 @@ function drawRooms(R){
   px(p.x+13,p.y+0,8,4,"#4a4a5a"); px(p.x+14,p.y+1,5,2,"#1a1f2e");       // microwave
   px(p.x+25,p.y+3,6,3,"#7fa8d8"); px(p.x+26,p.y+3,4,1,"#a8c8e8");        // sink
   px(p.x+40,p.y+1,6,14,"#c8c8d8"); px(p.x+40,p.y+8,6,1,"#8a8a9a");       // fridge
-  const t=p.tc;
-  px(t.x-4,t.y-6,8,12,"#6b4a2f");px(t.x-6,t.y-5,12,10,"#6b4a2f");px(t.x-7,t.y-3,14,6,"#6b4a2f");
+  const c=p.tc;
+  px(c.x-4,c.y-6,8,12,"#6b4a2f");px(c.x-6,c.y-5,12,10,"#6b4a2f");px(c.x-7,c.y-3,14,6,"#6b4a2f");
   // rest room: beds + bean bag
   roomBox(R.rest,"#2a2538");
   for(const b of R.rest.beds){px(b.x,b.y,18,9,"#4a3d60");px(b.x,b.y-1,18,1,"#6b4a2f");px(b.x+1,b.y+1,5,3,"#e8e0c8")}
@@ -278,7 +303,7 @@ function poseOf(c){
   if(c.phase!=="seated")return "walk";
   if(c.moving)return "walk";
   const k=c.act&&c.act.state==="stay"?c.act.type:"";
-  return {coffee:"cup",tv:"sit",chat:"stand",meet:"stand",listen:"seated",wander:"stand",rest:"sleep"}[k]||"seated";
+  return {coffee:"cup",tv:"sit",chat:"stand",meet:"stand",listen:"seated",wander:"stand",rest:"sleep",sleep:"sleep"}[k]||"seated";
 }
 function usedBy(type,key){const s=new Set();for(const o of chars.values())if(o.act&&o.act.type===type&&o.act[key]!=null)s.add(o.act[key]);return s}
 function startIdleAct(c,a){
@@ -287,6 +312,7 @@ function startIdleAct(c,a){
     const used=usedBy("rest","bed"), free=A.R.rest.beds.map((b,k)=>k).filter(k=>!used.has(k));
     if(free.length){const k=free[rnd(0,free.length-1)],b=A.R.rest.beds[k];
       c.act={type:"rest",state:"go",bed:k,tx:b.sx,ty:b.sy,dur:rnd(1800,3600)};return;}
+    c.act={type:"sleep",state:"stay",until:frame+rnd(1500,3000)};return;     // rest room full: sleep at the desk
   }
   const r2=Math.random();
   if(r2<0.22){                                            // pantry: coffee at the machine or the round table
@@ -303,13 +329,14 @@ function startIdleAct(c,a){
   }
   const idlePeers=()=>agents.map(o=>({o,oc:chars.get(o.id)})).filter(e=>e.o.id!==a.id&&e.o.kind==="main"&&
       e.o.status==="idle"&&e.oc&&e.oc.phase==="seated"&&!e.oc.act&&!e.oc.moving);
-  if(r2<0.62){                                            // meeting room: two agents talk at the round table
+  if(r2<0.62){                                            // meeting room: 2-4 agents gather at the long table
     const peers=idlePeers(), u=usedBy("meet","seat"), free=A.R.meet.seats.map((s,k)=>k).filter(k=>!u.has(k));
     if(peers.length&&free.length>=2){
-      const e=peers[rnd(0,peers.length-1)], dur=rnd(500,900);
-      const s1=A.R.meet.seats[free[0]], s2=A.R.meet.seats[free[1]];
-      c.act={type:"meet",state:"go",seat:free[0],tx:s1.x,ty:s1.y,dur};
-      e.oc.act={type:"meet",state:"go",seat:free[1],tx:s2.x,ty:s2.y,dur};
+      const n=Math.min(peers.length,rnd(1,3),free.length-1), dur=rnd(500,900);
+      const grp=[...peers].sort(()=>Math.random()-0.5).slice(0,n).map(e=>e.oc);
+      const st=rnd(0,free.length-1), order=free.slice(st).concat(free.slice(0,st));
+      [c,...grp].forEach((m,j)=>{const k=order[j],s=A.R.meet.seats[k];
+        m.act={type:"meet",state:"go",seat:k,tx:s.x,ty:s.y,dur}});
       return;
     }
   }
@@ -422,6 +449,12 @@ cv.addEventListener("wheel",ev=>{
 document.getElementById("zin").onclick=()=>zoomAt(cv.clientWidth/2,cv.clientHeight/2,1.25);
 document.getElementById("zout").onclick=()=>zoomAt(cv.clientWidth/2,cv.clientHeight/2,0.8);
 document.getElementById("fit").onclick=()=>{userCam=false};
+document.getElementById("full").onclick=()=>{
+  if(document.fullscreenElement)document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(()=>{});
+  userCam=false;
+};
+document.addEventListener("fullscreenchange",()=>{document.body.classList.toggle("fs",!!document.fullscreenElement);userCam=false});
 window.addEventListener("keydown",ev=>{
   if(ev.key==="Delete"||ev.key==="Backspace"){if(edit&&sel)removeSel()}
   const st=20/cam.z; let m=true;
@@ -430,43 +463,61 @@ window.addEventListener("keydown",ev=>{
   if(m)userCam=true;
 });
 
-// ── layout editing (drag desks + furniture, save on the server) ─────────
+// ── layout editing (drag desks, furniture and rooms; no overlaps; saved on the server) ──
 const editBtn=document.getElementById("edit"), editBar=document.getElementById("editbar");
 if(IN_VSCODE)editBtn.style.display="none";
 function snap(v){return Math.round(v/2)*2}
 function toWorld(ev){const r=cv.getBoundingClientRect();return {x:cam.x+(ev.clientX-r.left)/cam.z,y:cam.y+(ev.clientY-r.top)/cam.z}}
 function setEditUI(on){editBar.style.display=on?"flex":"none";editBtn.style.display=on?"none":(IN_VSCODE?"none":"");cv.style.cursor=on?"default":"grab"}
+function resetActs(){for(const c of chars.values())if(c.act)c.act={type:"return"}}
 function startEdit(){
-  const wi=worldInfo(), L={desks:{},items:itemsOf(wi).map(o=>({...o}))};
+  const wi=ANCH.wi, L={desks:{},items:itemsOf(wi).map(o=>({...o})),rooms:{}};
   agents.forEach((a,i)=>{L.desks[a.id]=deskPos(i,a,wi)});
-  edit=L; sel=null; setEditUI(true);
+  for(const k of Object.keys(ROOM_SIZE)){const p=roomPos(k,wi);L.rooms[k]={x:p.x,y:p.y}}
+  edit=L; sel=null; userCam=true; resetActs(); setEditUI(true);
+}
+function refOf(key){
+  if(key.startsWith("item:"))return edit.items.find(o=>"item:"+o.id===key);
+  if(key.startsWith("desk:"))return edit.desks[key.slice(5)];
+  return edit.rooms[key.slice(5)];
 }
 function hitTest(w){
-  const L=edit;
-  for(let k=L.items.length-1;k>=0;k--){const it=L.items[k],sz=ITEM_SIZE[it.type]||{w:8,h:8};
-    if(w.x>=it.x&&w.x<=it.x+sz.w&&w.y>=it.y&&w.y<=it.y+sz.h)return {key:"item:"+it.id,ref:it};}
-  for(let i=agents.length-1;i>=0;i--){const a=agents[i],d=L.desks[a.id];
-    if(d&&w.x>=d.x&&w.x<=d.x+16&&w.y>=d.y&&w.y<=d.y+18)return {key:"desk:"+a.id,ref:d};}
-  return null;
+  const pr=r=>r.key.startsWith("item:")?0:r.key.startsWith("desk:")?1:2;
+  const hits=allRects(ANCH.wi).filter(r=>w.x>=r.x&&w.x<=r.x+r.w&&w.y>=r.y&&w.y<=r.y+r.h).sort((a,b)=>pr(a)-pr(b));
+  if(!hits.length)return null;
+  const r=hits[0]; return {key:r.key,ref:refOf(r.key),w:r.w,h:r.h};
 }
 function removeSel(){if(!edit||!sel||!sel.startsWith("item:"))return;edit.items=edit.items.filter(o=>"item:"+o.id!==sel);sel=null}
 function addItem(type){
   if(!edit)return;
-  const w={x:cam.x+cv.clientWidth/2/cam.z,y:cam.y+cv.clientHeight/2/cam.z};
-  const it={id:"n"+Date.now()+rnd(0,99),type,x:snap(w.x-8),y:snap(w.y-8)};
-  edit.items.push(it); sel="item:"+it.id;
+  const sz=ITEM_SIZE[type], rects=allRects(ANCH.wi);
+  const cx=snap(cam.x+cv.clientWidth/2/cam.z-sz.w/2), cy=snap(cam.y+cv.clientHeight/2/cam.z-sz.h/2);
+  for(let r=0;r<=200;r+=2)for(let dx=-r;dx<=r;dx+=2)for(let dy=-r;dy<=r;dy+=2){
+    if(Math.max(Math.abs(dx),Math.abs(dy))!==r)continue;
+    const x=cx+dx,y=cy+dy; if(x<0||y<8)continue;
+    if(!collides(rects,x,y,sz.w,sz.h)){
+      const it={id:"n"+Date.now()+rnd(0,99),type,x,y}; edit.items.push(it); sel="item:"+it.id; return;
+    }
+  }
+  document.getElementById("count").textContent="no free space for that item";
 }
 cv.addEventListener("mousedown",ev=>{
   const w=toWorld(ev);
   if(edit){
     const h=hitTest(w);
-    if(h){sel=h.key;drag={ref:h.ref,ox:w.x-h.ref.x,oy:w.y-h.ref.y};return}
+    if(h){sel=h.key;drag={ref:h.ref,key:h.key,w:h.w,h:h.h,ox:w.x-h.ref.x,oy:w.y-h.ref.y};return}
     sel=null;
   }
   pan={mx:ev.clientX,my:ev.clientY,cx:cam.x,cy:cam.y};
 });
 window.addEventListener("mousemove",ev=>{
-  if(drag){const w=toWorld(ev);drag.ref.x=snap(w.x-drag.ox);drag.ref.y=snap(w.y-drag.oy);}
+  if(drag){
+    const w=toWorld(ev), nx=Math.max(0,snap(w.x-drag.ox)), ny=Math.max(8,snap(w.y-drag.oy));
+    const rects=allRects(ANCH.wi,drag.key), ref=drag.ref;
+    if(!collides(rects,nx,ny,drag.w,drag.h)){ref.x=nx;ref.y=ny}              // free spot
+    else if(!collides(rects,nx,ref.y,drag.w,drag.h))ref.x=nx;                // slide along x
+    else if(!collides(rects,ref.x,ny,drag.w,drag.h))ref.y=ny;                // slide along y
+  }
   else if(pan){cam.x=pan.cx-(ev.clientX-pan.mx)/cam.z;cam.y=pan.cy-(ev.clientY-pan.my)/cam.z;userCam=true}
 });
 window.addEventListener("mouseup",()=>{drag=null;pan=null});
@@ -475,10 +526,11 @@ document.getElementById("addplant").onclick=()=>addItem("plant");
 document.getElementById("addtv").onclick=()=>addItem("tvset");
 document.getElementById("addshelf").onclick=()=>addItem("shelf");
 document.getElementById("del").onclick=removeSel;
-document.getElementById("cancel").onclick=()=>{edit=null;sel=null;setEditUI(false)};
+document.getElementById("cancel").onclick=()=>{edit=null;sel=null;setEditUI(false);userCam=false;resetActs()};
 document.getElementById("reset").onclick=()=>{
   if(!edit)return;
-  const wi=worldInfo(); edit.desks={}; edit.items=defaultItems(wi); sel=null;
+  const wi=ANCH.wi; edit.desks={}; edit.items=defaultItems(wi); sel=null;
+  edit.rooms={}; for(const [k,v] of Object.entries(defaultRooms(wi)))edit.rooms[k]={...v};
   agents.forEach((a,i)=>{edit.desks[a.id]={x:10+(i%wi.cols)*34,y:14+Math.floor(i/wi.cols)*32}});
 };
 document.getElementById("save").onclick=async()=>{
@@ -486,12 +538,12 @@ document.getElementById("save").onclick=async()=>{
   try{
     const r=await fetch("layout",{method:"POST",headers:{"Content-Type":"application/json","X-PixelOffice":"1"},body:JSON.stringify(edit)});
     if(!r.ok)throw new Error("save failed "+r.status);
-    layout=edit; edit=null; sel=null; setEditUI(false);
+    layout=edit; edit=null; sel=null; setEditUI(false); userCam=false; resetActs();
   }catch(e){document.getElementById("count").textContent="save failed: "+e.message}
 };
 async function loadLayout(){
   try{const r=await fetch("layout");const d=await r.json();
-    if(d&&typeof d==="object"&&(d.desks||d.items))layout={desks:d.desks||{},items:d.items||null};}catch(e){}
+    if(d&&typeof d==="object"&&(d.desks||d.items||d.rooms))layout={desks:d.desks||{},items:d.items||null,rooms:d.rooms||null};}catch(e){}
 }
 
 // ── render loop ─────────────────────────────────────────────────────────
@@ -533,10 +585,12 @@ function render(){
   }
   if(edit){                                                // edit overlay: outlines + selection
     const box=(x,y,w,h,col)=>{px(x,y,w,0.5,col);px(x,y+h,w,0.5,col);px(x,y,0.5,h,col);px(x+w,y,0.5,h,col)};
-    for(const it of edit.items){const sz=ITEM_SIZE[it.type]||{w:8,h:8};box(it.x-1,it.y-1,sz.w+2,sz.h+2,sel==="item:"+it.id?"#e8c170":"#5fce7a")}
-    agents.forEach(a=>{const d=edit.desks[a.id];if(d)box(d.x-1,d.y-1,18,20,sel==="desk:"+a.id?"#e8c170":"#4fa4d8")});
+    for(const r of allRects(wi)){
+      const col=sel===r.key?"#e8c170":r.key.startsWith("room:")?"#d8884f":r.key.startsWith("item:")?"#5fce7a":"#4fa4d8";
+      box(r.x-1,r.y-1,r.w+2,r.h+2,col);
+    }
     ctx.font="12px ui-monospace";ctx.textAlign="center";ctx.fillStyle="#e8c170";
-    ctx.fillText("EDIT: drag desks / furniture, Delete removes furniture, then save. Rooms on the right are fixed.",W/2,H-10);
+    ctx.fillText("EDIT: drag desks, furniture and rooms (no overlap). Delete removes furniture. Then save.",W/2,H-10);
   }
   ctx.font="13px ui-monospace";ctx.textAlign="center";
   if(offline){
