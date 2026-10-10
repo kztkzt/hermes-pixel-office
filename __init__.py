@@ -355,6 +355,14 @@ def _ensure_server() -> None:
     t.start()
 
 
+def _layout_path() -> Path:
+    home = get_hermes_home()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    d = root / "pixel-office"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "layout.json"
+
+
 def _serve() -> None:
     global _port
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -372,6 +380,12 @@ def _serve() -> None:
                     body = html_path.read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "text/html; charset=utf-8")
+                elif self.path.split("?")[0] == "/layout":
+                    lp = _layout_path()
+                    body = lp.read_bytes() if lp.exists() else b"{}"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Cache-Control", "no-store")
                 elif self.path.split("?")[0] == "/state":
                     body = json.dumps(build_state()).encode("utf-8")
                     self.send_response(200)
@@ -386,6 +400,39 @@ def _serve() -> None:
                 self.wfile.write(body)
             except Exception:
                 logger.debug("pixel-office request failed", exc_info=True)
+
+    def _do_post(self) -> None:
+        # layout save: needs the custom header, so a random web page cannot write it (CORS preflight blocks it)
+        try:
+            ok = self.path.split("?")[0] == "/layout" and self.headers.get("X-PixelOffice") == "1"
+            n = int(self.headers.get("Content-Length") or 0)
+            if not ok or n <= 0 or n > 200_000:
+                self.send_response(400); self.send_header("Content-Length", "0"); self.end_headers(); return
+            data = json.loads(self.rfile.read(n).decode("utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("layout must be an object")
+            lp = _layout_path()
+            if not data:                       # empty object = reset to defaults
+                if lp.exists():
+                    lp.unlink()
+            else:
+                tmp = lp.with_suffix(".json.tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                tmp.replace(lp)
+            body = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception:
+            logger.debug("pixel-office layout save failed", exc_info=True)
+            try:
+                self.send_response(500); self.send_header("Content-Length", "0"); self.end_headers()
+            except Exception:
+                pass
+
+    Handler.do_POST = _do_post
 
     try:
         srv = ThreadingHTTPServer(("127.0.0.1", _port), Handler)
