@@ -78,7 +78,7 @@ let layout={desks:{},items:null,rooms:null};   // saved
 let edit=null;                                  // working copy while editing
 let sel=null, drag=null, pan=null;
 const ITEM_SIZE={tvset:{w:26,h:23},plant:{w:7,h:9},shelf:{w:12,h:14}};
-const ROOM_SIZE={meet:{w:96,h:52},pantry:{w:48,h:26},rest:{w:48,h:26}};
+const ROOM_SIZE={meet:{w:96,h:52},pantry:{w:48,h:26},rest:{w:48,h:38}};
 const ROOM_LABEL={meet:"MEETING",pantry:"PANTRY",rest:"REST ROOM"};
 const DESK_W=16, DESK_H=26;                     // desk + label area, used for overlap checks
 function worldInfo(){
@@ -171,7 +171,7 @@ function drawRooms(R){
   // rest room: beds + bean bag
   roomBox(R.rest,"#2a2538");
   for(const b of R.rest.beds){px(b.x,b.y,18,9,"#4a3d60");px(b.x,b.y-1,18,1,"#6b4a2f");px(b.x+1,b.y+1,5,3,"#e8e0c8")}
-  px(R.rest.x+18,R.rest.y+22,6,3,"#9b6fd8");px(R.rest.x+19,R.rest.y+21,4,1,"#b48fe8");
+  px(R.rest.x+22,R.rest.y+30,6,3,"#9b6fd8");px(R.rest.x+23,R.rest.y+29,4,1,"#b48fe8");
 }
 function drawBedFronts(R){for(const b of R.rest.beds){px(b.x+1,b.y+3,16,6,"#3b5a8f");px(b.x+1,b.y+3,16,1,"#5a7ab0")}}
 function drawItem(it,tvOn){
