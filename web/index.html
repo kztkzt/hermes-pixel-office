@@ -39,6 +39,8 @@ const vsapi = IN_VSCODE ? acquireVsCodeApi() : null;
 const cv = document.getElementById("c"), ctx = cv.getContext("2d");
 let S = 4;                                  // pixel scale (auto-shrinks if crowded)
 let agents = [], frame = 0, offline = null;
+const FUR = {tvOn:false};                     // furniture anchors, set by drawOffice
+const rnd=(a,b)=>a+Math.floor(Math.random()*(b-a+1));
 
 // ── palettes / sprites ──────────────────────────────────────────────────
 const SKIN=["#f0c8a0","#c68b59","#8d5524","#ffdbac","#e0ac69","#a1665e"];
@@ -68,6 +70,24 @@ function drawOffice(w,h){
   // coffee machine on a small table, right of door
   px(10,h-11,6,1,"#6b4a2f");px(10,h-10,6,3,"#54381f");
   px(11,h-14,4,3,"#33283f");px(12,h-13,1,1,"#d84f6f");
+  // -- lounge: TV + sofa (idle agents come here) --
+  const cx=Math.floor(w/2);
+  px(cx-8,h-28,16,9,"#151022");                                   // TV frame
+  const bars=["#3b5a8f","#7fa8d8","#d84f6f","#c9a227","#5fce7a"];
+  for(let i=0;i<14;i+=2){
+    px(cx-7+i,h-27,2,7, FUR.tvOn ? bars[(i/2+(frame>>4))%bars.length] : "#0d0a14");
+  }
+  px(cx-3,h-19,6,1,"#4a4a5a");                                   // TV stand
+  px(cx-12,h-14,24,4,"#6b3a5a");                                  // sofa back
+  FUR.cx=cx; FUR.w=w; FUR.h=h;
+  FUR.sofa=[{x:cx-10,y:h-18},{x:cx+2,y:h-18}];
+  FUR.coffee={x:18,y:h-17}; FUR.cooler={x:8,y:h-17}; FUR.plant={x:w-16,y:h-17};
+}
+function drawSofaFront(){
+  if(!FUR.h)return; const cx=FUR.cx,h=FUR.h;
+  px(cx-12,h-10,24,4,"#8a4a74");                                  // seat cushion (hides legs)
+  px(cx-13,h-13,2,8,"#5a2f4a"); px(cx+11,h-13,2,8,"#5a2f4a");     // arms
+  px(cx-12,h-6,24,1,"#3c2814");                                   // base
 }
 function drawDesk(x,y){
   px(x,y+10,16,1,"#6b4a2f"); px(x,y+11,16,3,"#54381f");
@@ -89,10 +109,12 @@ function deskScreen(x,y,a){
 }
 
 // ── characters ──────────────────────────────────────────────────────────
-function drawChar(a,fx,fy,seated){
+function drawChar(a,fx,fy,seatedOrPose){
+  const pose = typeof seatedOrPose==="string" ? seatedOrPose : (seatedOrPose?"seated":"walk");
+  const seated = pose==="seated";
   const h=hash(a.id), skin=SKIN[h%SKIN.length], shirt=SHIRT[(h>>3)%SHIRT.length],
         hair=HAIR[(h>>6)%HAIR.length], t=frame>>4;
-  const walking = !seated;
+  const walking = pose==="walk";
   const bob=((a.status==="working"||walking)&&(t%2))?1:0;
   const x=fx, y=fy+bob;
   if(a.status==="gone")ctx.globalAlpha=0.35;
@@ -101,7 +123,8 @@ function drawChar(a,fx,fy,seated){
   if(h%3===0)px(x+1,y+1,1,2,hair);                 // side hair
   if(h%5===0)px(x+2,y-1,4,1,hair);                 // tall hair
   px(x+2,y+2,4,3,skin);                            // face
-  if(h%4===0){px(x+2,y+3,2,1,"#222a44");px(x+4,y+3,2,1,"#222a44")} // glasses
+  if(pose==="sleep"){px(x+2,y+3,2,1,"#5a4030");px(x+4,y+3,2,1,"#5a4030")}  // eyes closed
+  else if(h%4===0){px(x+2,y+3,2,1,"#222a44");px(x+4,y+3,2,1,"#222a44")} // glasses
   else{px(x+3,y+3,1,1,"#111");px(x+5,y+3,1,1,"#111")}
   px(x+1,y+5,6,5,shirt);                           // body
   if(a.kind==="subagent")px(x+1,y+5,6,1,"#e8c170");// gold collar
@@ -119,7 +142,17 @@ function drawChar(a,fx,fy,seated){
     else if(a.activity==="reading"){px(x+7,y+7,3,2,"#e8e0c8");px(x+8,y+7,1,2,"#b8b0a0")} // book
     else if(a.activity==="delegating"&&t%2)px(x+8,y+6,2,1,skin);      // pointing
   }
+  if(pose==="cup"){px(x+7,y+7,2,2,"#e8e0c8");                       // coffee cup + steam
+    if((frame>>4)%2)px(x+8,y+5,1,1,"#cfc4e8");else px(x+7,y+5,1,1,"#cfc4e8");}
+  if(pose==="sleep"){ctx.fillStyle="#cfc4e8";ctx.font="bold 11px ui-monospace,monospace";
+    ctx.textAlign="left";const zy=(frame>>5)%3;
+    ctx.fillText("z",(x+8)*S,(y-1-zy)*S);ctx.fillText("Z",(x+10)*S,(y-4-zy)*S);}
   ctx.globalAlpha=1;
+}
+function drawChat(c){                          // speech bubble with blinking dots (visual only)
+  const x=c.x,y=c.y,n=((frame>>4)%3)+1;
+  px(x+1,y-7,8,5,"#e8d8b0"); px(x+3,y-2,1,1,"#e8d8b0");
+  for(let i=0;i<3;i++)px(x+2+i*2,y-5,1,1,i<n?"#3a2f4b":"#c8b890");
 }
 function drawBubble(a,x,y){
   const t=frame>>4;
@@ -143,13 +176,19 @@ function label(a,x,y){
   ctx.font="10px ui-monospace,monospace";ctx.textAlign="center";
   ctx.fillStyle=a.kind==="subagent"?"#e8c170":"#cfc4e8";
   ctx.fillText(a.label.slice(0,17),(x+8)*S,(y+18.5)*S);
+  let dy=0;
+  if(a.model){                                           // own line under the ID: model . effort
+    ctx.font="9px ui-monospace,monospace";ctx.fillStyle="#8a7fb0";
+    ctx.fillText((a.model.replace(/^claude-/,"")+" \u00b7 "+(a.effort||"?")).slice(0,22),(x+8)*S,(y+21.5)*S);
+    ctx.font="10px ui-monospace,monospace";dy=3;
+  }
   const st=a.status==="waiting"?"needs input!"
         :a.status==="working"?(a.tool||"working"):a.status;
   ctx.fillStyle={working:"#5fce7a",thinking:"#c9a227",idle:"#7a6f8f",
                  waiting:"#d84f6f",done:"#5fce7a",gone:"#555"}[a.status]||"#7a6f8f";
-  ctx.fillText(st.slice(0,17),(x+8)*S,(y+21.5)*S);
+  ctx.fillText(st.slice(0,17),(x+8)*S,(y+21.5+dy)*S);
   if(a.detail){ctx.fillStyle="#6a5f80";
-    ctx.fillText(a.detail.slice(0,19),(x+8)*S,(y+24.5)*S)}
+    ctx.fillText(a.detail.slice(0,19),(x+8)*S,(y+24.5+dy)*S)}
 }
 
 // ── seats + walking ─────────────────────────────────────────────────────
@@ -159,18 +198,72 @@ const WALK = 0.55;                                  // grid cells per frame
 function seatPos(i,perRow){
   return {x:10+(i%perRow)*34, y:14+Math.floor(i/perRow)*32};
 }
+function poseOf(c){
+  if(c.phase!=="seated")return "walk";
+  if(c.moving)return "walk";
+  const k=c.act&&c.act.state==="stay"?c.act.type:"";
+  return {coffee:"cup",tv:"sit",chat:"stand",listen:"seated",wander:"stand",sleep:"sleep"}[k]||"seated";
+}
+function startIdleAct(c,a,i,perRow){
+  const idleFor=frame-c.idleSince, r=Math.random();
+  if(idleFor>2700&&r<0.5){c.act={type:"sleep",state:"stay",until:frame+rnd(1500,3000)};return;}
+  const r2=Math.random();
+  if(r2<0.25){c.act={type:"coffee",state:"go",tx:FUR.coffee.x,ty:FUR.coffee.y,dur:rnd(300,500)};return;}
+  if(r2<0.5){
+    const used=new Set([...chars.values()].filter(o=>o.act&&o.act.type==="tv").map(o=>o.act.seat));
+    const free=[0,1].filter(s=>!used.has(s));
+    if(free.length){const s=free[rnd(0,free.length-1)];
+      c.act={type:"tv",state:"go",seat:s,tx:FUR.sofa[s].x,ty:FUR.sofa[s].y,dur:rnd(900,1500)};return;}
+  }
+  if(r2<0.8){
+    const others=agents.map((o,j)=>({o,j,oc:chars.get(o.id)})).filter(e=>e.o.id!==a.id&&e.o.kind==="main"&&
+      e.o.status==="idle"&&e.oc&&e.oc.phase==="seated"&&!e.oc.act&&!e.oc.moving);
+    if(others.length){
+      const e=others[rnd(0,others.length-1)], dur=rnd(400,700);
+      const tx=e.oc.seat.x+2+(e.oc.seat.x>c.seat.x?-9:9), ty=e.oc.seat.y;
+      const dist=Math.hypot(tx-c.x,ty-c.y)/WALK+30;
+      c.act={type:"chat",state:"go",tx,ty,dur};
+      e.oc.act={type:"listen",state:"stay",until:frame+dist+dur};
+      return;
+    }
+  }
+  const pts=[FUR.cooler,FUR.plant,{x:rnd(24,Math.max(26,FUR.w-30)),y:FUR.h-rnd(18,26)}];
+  const pt=pts[rnd(0,pts.length-1)];
+  c.act={type:"wander",state:"go",tx:pt.x,ty:pt.y,dur:rnd(150,350)};
+}
 function stepChars(perRow){
-  const seen=new Set();
+  const seen=new Set(); FUR.tvOn=false;
   agents.forEach((a,i)=>{
     seen.add(a.id);
     const seat=seatPos(i,perRow);
     let c=chars.get(a.id);
-    if(!c){ c={x:2,y:2,seat,phase:"in",lastStatus:a.status}; chars.set(a.id,c); }
+    if(!c){ c={x:2,y:2,seat,phase:"in",lastStatus:a.status,act:null,idleSince:0,nextAt:frame+rnd(200,600),moving:true}; chars.set(a.id,c); }
     c.seat=seat;
-    const tx=c.phase==="out"?2:c.seat.x+2, ty=c.phase==="out"?2:c.seat.y;
+    // idle life: walk around, chat, watch TV, drink coffee, sleep; any real work sends the agent back to its desk
+    if(a.status!=="idle"||a.kind!=="main"){
+      if(c.act&&c.act.type!=="return")c.act={type:"return"};
+      c.idleSince=0; c.nextAt=frame+300;
+    }else if(c.phase==="seated"){
+      if(!c.idleSince)c.idleSince=frame;
+      if(!c.act&&frame>=c.nextAt)startIdleAct(c,a,i,perRow);
+    }
+    if(c.act&&c.act.state==="stay"&&frame>c.act.until){
+      if(c.act.type==="sleep"||c.act.type==="listen"){c.act=null;c.nextAt=frame+rnd(300,900);}
+      else c.act={type:"return"};
+    }
+    if(c.act&&c.act.type==="tv"&&c.act.state==="stay")FUR.tvOn=true;
+    let tx=c.seat.x+2, ty=c.seat.y;
+    if(c.phase==="out"){tx=2;ty=2}
+    else if(c.act&&c.act.tx!=null&&c.act.type!=="return"){tx=c.act.tx;ty=c.act.ty}
     const dx=tx-c.x, dy=ty-c.y, d=Math.hypot(dx,dy);
-    if(d<WALK){ c.x=tx;c.y=ty; if(c.phase==="in")c.phase="seated"; }
-    else { c.x+=dx/d*WALK; c.y+=dy/d*WALK; }
+    if(d<WALK){
+      c.x=tx;c.y=ty;c.moving=false;
+      if(c.phase==="in")c.phase="seated";
+      if(c.act){
+        if(c.act.type==="return"){c.act=null;c.nextAt=frame+rnd(300,900);}
+        else if(c.act.state==="go"){c.act.state="stay";c.act.until=frame+c.act.dur;}
+      }
+    }else{ c.x+=dx/d*WALK; c.y+=dy/d*WALK; c.moving=true; }
     // sound triggers on status transitions
     if(c.lastStatus!==a.status){
       if(a.status==="waiting")chime([880,660,880]);
@@ -180,7 +273,7 @@ function stepChars(perRow){
   });
   for(const [id,c] of chars){
     if(!seen.has(id)){
-      c.phase="out";
+      c.phase="out"; c.moving=true;
       const dx=2-c.x, dy=2-c.y, d=Math.hypot(dx,dy);
       if(d<WALK)chars.delete(id);
       else{c.x+=dx/d*WALK;c.y+=dy/d*WALK;}
@@ -236,15 +329,20 @@ function render(){
   });
   agents.forEach((a,i)=>{
     const c=chars.get(a.id); if(!c)return;
-    const seated=c.phase==="seated";
-    drawChar(a,c.x,c.y,seated);
-    if(seated){const seat=seatPos(i,perRow);
-      drawBubble(a,seat.x+2,seat.y); label(a,seat.x,seat.y);}
+    drawChar(a,c.x,c.y,poseOf(c));
+    if(c.act&&c.act.state==="stay"&&(c.act.type==="chat"||c.act.type==="listen"))drawChat(c);
+  });
+  drawSofaFront();
+  agents.forEach((a,i)=>{
+    const c=chars.get(a.id); if(!c||c.phase==="out")return;
+    const seat=seatPos(i,perRow);
+    if(c.phase==="seated"&&!c.moving&&!c.act)drawBubble(a,seat.x+2,seat.y);
+    if(c.phase==="seated")label(a,seat.x,seat.y);          // label stays at the desk even while the agent is away
   });
   // walking-out ghosts
   for(const [id,c] of chars){
     if(c.phase==="out"&&!agents.find(a=>a.id===id))
-      drawChar({id,kind:"main",status:"gone",activity:""},c.x,c.y,false);
+      drawChar({id,kind:"main",status:"gone",activity:""},c.x,c.y,"walk");
   }
   ctx.font="13px ui-monospace";ctx.textAlign="center";
   if(offline){

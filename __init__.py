@@ -39,6 +39,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from pathlib import Path
@@ -80,8 +81,15 @@ def _events_path() -> Path:
 # Event publishing (hook side — must be cheap and never raise)
 # ---------------------------------------------------------------------------
 
+def _profile_name() -> str:
+    # label agents by profile (home dir name; default home is just "hermes")
+    n = get_hermes_home().name
+    return n
+
+
 def _publish(event: Dict[str, Any]) -> None:
     try:
+        event.setdefault("profile", _profile_name())
         event.setdefault("ts", time.time())
         event.setdefault("pid", os.getpid())
         line = json.dumps(event, ensure_ascii=False, default=str)
@@ -147,6 +155,70 @@ def _short(text: Any, n: int = 60) -> str:
     return s[: n - 1] + "…" if len(s) > n else s
 
 
+def _roster_names() -> List[str]:
+    """Default profile ('hermes') plus every profile folder, so idle agents stay visible."""
+    home = get_hermes_home()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    names = ["hermes"]
+    try:
+        names += sorted(p.name for p in (root / "profiles").iterdir() if p.is_dir())
+    except Exception:
+        pass
+    return names
+
+
+_PRIO = {"waiting": 5, "working": 4, "thinking": 3, "idle": 2, "done": 1, "gone": 0}
+
+
+_CFG_CACHE: Dict[str, Any] = {}
+
+
+def _profile_model(name: str) -> Dict[str, str]:
+    """Model id and reasoning effort from the profile's config.yaml (cached by mtime)."""
+    import re
+    home = get_hermes_home()
+    root = home.parent.parent if home.parent.name == "profiles" else home
+    cfg = root / "config.yaml" if name == "hermes" else root / "profiles" / name / "config.yaml"
+    try:
+        mt = cfg.stat().st_mtime
+        hit = _CFG_CACHE.get(name)
+        if hit and hit[0] == mt:
+            return hit[1]
+        text = cfg.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^model:\s*\n(?:[ \t]+.*\n)*?[ \t]+default:\s*[\"']?([^\s\"'#]+)", text, re.M)
+        e = re.search(r"^[ \t]{2}reasoning_effort:\s*[\"']?([A-Za-z]+)", text, re.M)
+        out = {"model": m.group(1) if m else "", "effort": e.group(1) if e else ""}
+        _CFG_CACHE[name] = (mt, out)
+        return out
+    except Exception:
+        return {"model": "", "effort": ""}
+
+
+def _merge_by_profile(visible: List[Dict[str, Any]], now: float) -> List[Dict[str, Any]]:
+    """One permanent character per profile; busiest live session decides its status."""
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    for a in visible:
+        if a.get("kind") == "main" and a.get("profile"):
+            groups.setdefault(a["profile"], []).append(a)
+    merged: List[Dict[str, Any]] = []
+    for name in _roster_names():
+        live = [a for a in groups.pop(name, []) if a.get("status") != "gone"]
+        if live:
+            best = dict(max(live, key=lambda a: (_PRIO.get(a["status"], 0), a.get("updated_at", 0))))
+            best["id"] = "profile:" + name
+            best["label"] = name
+            best.update(_profile_model(name))
+        else:
+            best = {"id": "profile:" + name, "label": name, "kind": "main", "status": "idle",
+                    "tool": "", "activity": "", "detail": "", "platform": "", "profile": name,
+                    "first_seen": 0, "updated_at": now}
+            best.update(_profile_model(name))
+        merged.append(best)
+    grouped_ids = {a["id"] for g in groups.values() for a in g}
+    rest = [a for a in visible if not (a.get("kind") == "main" and a.get("profile") in _roster_names())]
+    return merged + rest
+
+
 def build_state() -> Dict[str, Any]:
     """Fold the event log into {agents: [...]} for the frontend."""
     agents: Dict[str, Dict[str, Any]] = {}
@@ -157,18 +229,21 @@ def build_state() -> Dict[str, Any]:
         if a is None:
             a = {
                 "id": key,
-                "label": f"agent {key[-6:]}",
+                "label": ev.get("profile") or f"agent {key[-6:]}",
                 "kind": "main",
                 "status": "idle",
                 "tool": "",
                 "activity": "",
                 "detail": "",
                 "platform": ev.get("platform") or "",
+                "profile": ev.get("profile") or "",
                 "first_seen": ev.get("ts", now),
                 "updated_at": ev.get("ts", now),
             }
             agents[key] = a
         a["updated_at"] = ev.get("ts", a["updated_at"])
+        if not a.get("profile") and ev.get("profile"):
+            a["profile"] = ev["profile"]
         return a
 
     for ev in _read_events():
@@ -181,7 +256,7 @@ def build_state() -> Dict[str, Any]:
             a = ensure(key, ev)
             a["status"] = "idle"
             plat = ev.get("platform") or ""
-            a["label"] = f"{plat or 'hermes'} {key[-6:]}"
+            a["label"] = ev.get("profile") or f"{plat or 'hermes'} {key[-6:]}"
             a["detail"] = "session started"
         elif kind == "session_end":
             if key in agents:
@@ -248,7 +323,7 @@ def build_state() -> Dict[str, Any]:
             a["status"] = "idle"
         visible.append(a)
 
-    visible.sort(key=lambda a: (a["kind"] != "main", a.get("first_seen", 0)))
+    visible = _merge_by_profile(visible, now)
     return {"agents": visible, "ts": now}
 
 
@@ -470,3 +545,7 @@ def register(ctx: Any) -> None:
         "pixel-office registered — office at http://127.0.0.1:%s once events flow",
         _resolve_port(),
     )
+    # the long-lived gateway process serves the office from startup, so idle agents stay visible
+    # (gateway process serves the page even before any event flows)
+    if "gateway" in sys.argv:
+        _ensure_server()
